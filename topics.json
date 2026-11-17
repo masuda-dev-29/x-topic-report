@@ -1,0 +1,31 @@
+{
+  "settings": {
+    "retention_days": 30,
+    "text_limit": 280
+  },
+  "topics": [
+    {
+      "id": "genai",
+      "name": "生成AI",
+      "query": "生成AI",
+      "accounts": [],
+      "keywords": [],
+      "lang": "ja",
+      "min_likes": 100,
+      "feed": "top",
+      "include_replies": false,
+      "interval_min": 60,
+      "max_pages": 2,
+      "enabled": true
+    },
+    {
+      "id": "ai-labs",
+      "name": "AI企業の公式発表",
+      "query": "",
+      "accounts": ["OpenAI", "AnthropicAI", "GoogleDeepMind"],
+      "keywords": [],
+      "interval_min": 180,
+      "enabled": true
+    }
+  ]
+}
