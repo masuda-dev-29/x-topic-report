@@ -10,9 +10,18 @@
       "query": "LLM",
       "lang": "ja",
       "windows": [
-        { "hours": 1, "min_faves": 10 },
-        { "hours": 24, "min_faves": 100 },
-        { "hours": 168, "min_faves": 100 }
+        {
+          "hours": 1,
+          "min_faves": 10
+        },
+        {
+          "hours": 24,
+          "min_faves": 100
+        },
+        {
+          "hours": 168,
+          "min_faves": 100
+        }
       ],
       "include_replies": false,
       "interval_min": 60,
@@ -23,9 +32,33 @@
       "id": "anthropic",
       "name": "Anthropic",
       "query": "",
-      "accounts": ["OpenAI", "AnthropicAI", "GoogleDeepMind"],
+      "accounts": [
+        "OpenAI",
+        "AnthropicAI",
+        "GoogleDeepMind"
+      ],
       "keywords": [],
       "interval_min": 180,
+      "enabled": true
+    },
+    {
+      "id": "tmwk3qbd1",
+      "name": "Codex",
+      "query": "Codex",
+      "lang": "",
+      "windows": [
+        {
+          "hours": 24,
+          "min_faves": 100
+        },
+        {
+          "hours": 168,
+          "min_faves": 300
+        }
+      ],
+      "interval_min": 60,
+      "include_replies": false,
+      "accounts": [],
       "enabled": true
     }
   ]
