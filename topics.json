@@ -5,9 +5,9 @@
   },
   "topics": [
     {
-      "id": "genai",
-      "name": "生成AI",
-      "query": "生成AI",
+      "id": "llm",
+      "name": "LLM",
+      "query": "LLM",
       "accounts": [],
       "keywords": [],
       "lang": "ja",
@@ -19,8 +19,8 @@
       "enabled": true
     },
     {
-      "id": "ai-labs",
-      "name": "AI企業の公式発表",
+      "id": "anthropic",
+      "name": "Anthropic",
       "query": "",
       "accounts": ["OpenAI", "AnthropicAI", "GoogleDeepMind"],
       "keywords": [],
