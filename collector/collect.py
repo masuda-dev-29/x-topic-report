@@ -45,6 +45,17 @@ _fx_last = 0.0
 
 
 def fx_get(path, params=None):
+    """FxTwitter API を呼ぶ。一時的な失敗は 1 回だけ再試行する。"""
+    try:
+        return _fx_get(path, params)
+    except FxError as e:
+        if "429" in str(e):
+            raise
+        time.sleep(5)
+        return _fx_get(path, params)
+
+
+def _fx_get(path, params=None):
     """FxTwitter API を間隔を空けて呼ぶ。失敗は FxError。"""
     global _fx_last
     url = FX_API + path
