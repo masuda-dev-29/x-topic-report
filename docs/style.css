@@ -79,6 +79,11 @@ h1 { font-size: 2.125rem; line-height: 1.2; font-weight: 700; letter-spacing: -.
 .btn.primary:hover { filter: brightness(1.08); }
 .btn.destructive { color: var(--red); }
 .btn:disabled { opacity: .45; cursor: default; }
+.btn[aria-pressed=true], .btn[aria-pressed=true]:hover { background: var(--accent); color: #fff; }
+.tools { display: flex; flex-wrap: wrap; gap: 8px; margin-left: auto; }
+.tr-btn { background: none; border: 0; padding: 0; color: var(--accent); font-size: .8125rem; font-weight: 600;
+  min-height: 32px; display: inline-flex; align-items: center; text-align: left; }
+.tr-btn:disabled { color: var(--label2); }
 .sub { color: var(--label2); font-size: .9375rem; margin: 6px 0 0; }
 .sub.err { color: var(--red); }
 .conds { display: flex; flex-wrap: wrap; gap: 6px; margin: 12px 0 0; padding: 0; list-style: none; }
@@ -122,7 +127,7 @@ h1 { font-size: 2.125rem; line-height: 1.2; font-weight: 700; letter-spacing: -.
 .p-foot { display: flex; flex-wrap: wrap; align-items: center; gap: 4px 16px; color: var(--label2); font-size: .8125rem;
   font-variant-numeric: tabular-nums; }
 .p-foot .likes { color: var(--pink); font-weight: 600; }
-.p-foot a { margin-left: auto; font-size: .9375rem; font-weight: 600; min-height: 32px; display: inline-flex; align-items: center; }
+.p-foot .open { margin-left: auto; font-size: .9375rem; font-weight: 600; min-height: 32px; display: inline-flex; align-items: center; }
 .a-title { font-weight: 600; font-size: 1.0625rem; line-height: 1.45; color: var(--label); overflow-wrap: anywhere; }
 .a-meta { color: var(--label2); font-size: .8125rem; margin: 2px 0 6px; }
 .a-meta b { color: var(--accent); font-weight: 600; }
@@ -134,7 +139,7 @@ h1 { font-size: 2.125rem; line-height: 1.2; font-weight: 700; letter-spacing: -.
 .kv span:last-child { color: var(--label2); white-space: nowrap; font-variant-numeric: tabular-nums; }
 .insights { display: grid; grid-template-columns: repeat(auto-fit, minmax(260px, 1fr)); gap: 0 20px; }
 .more { display: flex; margin: 16px auto 0; }
-.note { background: var(--accent-tint); border-radius: var(--radius); padding: 12px 16px; font-size: .9375rem; margin: 16px 0 0; }
+.note { background: var(--accent-tint); border-radius: var(--radius); padding: 10px 16px; font-size: .9375rem; margin: 0 0 16px; }
 footer { color: var(--label2); font-size: .75rem; margin-top: 48px; line-height: 1.6; }
 
 /* ---- シート（モーダル） ---- */
@@ -191,7 +196,7 @@ footer { color: var(--label2); font-size: .75rem; margin-top: 48px; line-height:
   .stats { grid-template-columns: repeat(auto-fit, minmax(96px, 1fr)); gap: 8px; }
   .stat { padding: 10px 12px; }
   .stat b { font-size: 1.25rem; }
-  .actions { margin-left: 0; }
+  .actions, .tools { margin-left: 0; }
   .seg { max-width: 100%; overflow-x: auto; }
 }
 @media (prefers-reduced-motion: reduce) { * { transition: none !important; } }

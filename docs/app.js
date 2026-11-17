@@ -14,7 +14,7 @@ const LANGS = [["", "指定なし"], ["ja", "日本語"], ["en", "英語"]];
 const INTERVALS = [[60, "1時間ごと"], [180, "3時間ごと"], [360, "6時間ごと"], [720, "12時間ごと"], [1440, "24時間ごと"]];
 
 const state = { index: null, data: null, tagId: null, win: 24, view: "rank", shown: PAGE, live: null,
-                deleted: new Set(), indexAt: 0 };
+                deleted: new Set(), indexAt: 0, autoTranslate: false };
 
 // ---------------------------------------------------------------- 小道具
 
@@ -123,7 +123,7 @@ function normalizePost(r) {
   return {
     id: String(r.id), url: r.url || `https://x.com/${a.screen_name}/status/${r.id}`,
     handle: a.screen_name || "", name: a.name || a.screen_name || "", text,
-    ts: r.created_timestamp || 0, likes: r.likes || 0, reposts: r.reposts || r.retweets || 0,
+    ts: r.created_timestamp || 0, lang: r.lang || "", likes: r.likes || 0, reposts: r.reposts || r.retweets || 0,
     replies: r.replies || 0, quotes: r.quotes || 0, views: r.views || 0,
     article_title: (r.article && r.article.title) || "", links,
     hashtags: [...new Set((text.match(/[#＃][\p{L}\p{N}_]+/gu) || []).map((t) => t.slice(1)))],
@@ -153,6 +153,140 @@ async function runLive() {
   }
   L.loading = false;
   render();
+}
+
+// ---------------------------------------------------------------- 翻訳
+// ブラウザ内蔵の Translator API（Chrome / Edge）を使う。翻訳は端末内で行われ、無料で API キーも不要。
+// 非対応のブラウザでは Google 翻訳を開くリンクを代わりに出す。
+
+const TARGET = (navigator.language || "ja").split("-")[0].toLowerCase();
+const canTranslate = "Translator" in self;
+const NO_LANG = new Set(["", "und", "zxx", "art", "qme", "qam", "qct", "qht", "qst"]);  // X が言語を判定できなかった投稿
+const LANG_FIX = { in: "id", iw: "he", "zh-cn": "zh", "zh-tw": "zh-Hant" };
+function srcLang(p) {
+  const l = (p.lang || "").toLowerCase();
+  return NO_LANG.has(l) ? "" : LANG_FIX[l] || l;
+}
+const isForeign = (p) => { const l = srcLang(p); return !!l && l !== TARGET; };
+function langName(code) {
+  try { return new Intl.DisplayNames(["ja"], { type: "language" }).of(code) || code; } catch { return code; }
+}
+
+let translatorDown = false;      // 内蔵翻訳が応答しない環境だと分かったら true
+const translators = new Map();   // 言語コード -> Promise<Translator>
+const translations = new Map();  // 投稿 id -> 訳文
+function getTranslator(lang) {
+  if (!translators.has(lang)) {
+    const ready = (async () => {
+      const pair = { sourceLanguage: lang, targetLanguage: TARGET };
+      // API はあっても応答しない環境があるので、一定時間で見切ってリンクでの翻訳に切り替える
+      const status = await Promise.race([Translator.availability(pair),
+        new Promise((resolve) => setTimeout(() => { translatorDown = true; resolve("unavailable"); }, 8000))]);
+      if (status === "unavailable") throw new Error(`このブラウザでは${langName(lang)}を翻訳できません`);
+      if (status !== "available") toast(`${langName(lang)}の翻訳モデルを準備しています（初回のみ）`);
+      return Translator.create(pair);
+    })();
+    ready.catch(() => translators.delete(lang));
+    translators.set(lang, ready);
+  }
+  return translators.get(lang);
+}
+async function translatePost(p) {
+  if (!translations.has(p.id)) {
+    translations.set(p.id, await (await getTranslator(srcLang(p))).translate(p.text));
+  }
+  return translations.get(p.id);
+}
+
+// 投稿 1 件ぶんの翻訳ボタン。body は本文の要素で、訳文と原文を差し替える
+function translateControl(p, body) {
+  if (!isForeign(p)) return null;
+  const external = () => link(
+    `https://translate.google.com/?sl=auto&tl=${TARGET}&op=translate&text=${encodeURIComponent(p.text)}`,
+    { class: "tr-btn" }, "Google 翻訳で開く");
+  if (!canTranslate || translatorDown) return external();
+  const btn = el("button", { type: "button", class: "tr-btn" }, "翻訳");
+  let shown = false;
+  const toggle = async (quiet) => {
+    if (shown) {
+      shown = false; body.textContent = p.text; btn.textContent = "翻訳";
+      return;
+    }
+    btn.disabled = true; btn.textContent = "翻訳中…";
+    try {
+      body.textContent = await translatePost(p);
+      shown = true; btn.textContent = `原文を表示（${langName(srcLang(p))}から翻訳）`;
+    } catch (e) {
+      if (e.name === "NotAllowedError") {  // モデルの初回ダウンロードにはユーザー操作が必要
+        btn.textContent = "翻訳";
+        if (!quiet) toast("翻訳モデルの準備が必要です。もう一度「翻訳」を押してください");
+      } else {
+        btn.replaceWith(external());  // 内蔵翻訳が使えない言語・環境では外部の翻訳ページへ
+        if (!quiet) toast(e.message || "翻訳できませんでした");
+        return;
+      }
+    }
+    btn.disabled = false;
+  };
+  btn.addEventListener("click", () => toggle(false));
+  if (state.autoTranslate) toggle(true);
+  return btn;
+}
+
+// ---------------------------------------------------------------- フィルター
+// 表示中の投稿を「含むワード」「除外ワード」で絞り込む。タグごとにこのブラウザへ保存する
+
+const splitWords = (s) => (s || "").split(/[\s,、]+/).map((w) => w.toLowerCase()).filter(Boolean);
+function getFilter() {
+  return (state.live ? state.live.filter : store.get("filters", {})[state.tagId]) || { include: "", exclude: "" };
+}
+function setFilter(f) {
+  if (state.live) state.live.filter = f;
+  else store.set("filters", { ...store.get("filters", {}), [state.tagId]: f });
+}
+const filterWords = () => splitWords(getFilter().include).length + splitWords(getFilter().exclude).length;
+function applyFilter(posts) {
+  const inc = splitWords(getFilter().include), exc = splitWords(getFilter().exclude);
+  if (!inc.length && !exc.length) return posts;
+  return posts.filter((p) => {
+    const hay = `${p.text} @${p.handle} ${p.name}`.toLowerCase();
+    return (!inc.length || inc.some((w) => hay.includes(w))) && !exc.some((w) => hay.includes(w));
+  });
+}
+
+function filterSheet() {
+  const cur = getFilter();
+  const inc = el("input", { type: "text", id: "f-inc", placeholder: "例: 発表 リリース", value: cur.include });
+  const exc = el("input", { type: "text", id: "f-exc", placeholder: "例: PR 懸賞 @spam_account", value: cur.exclude });
+  const body = [
+    group("抽出", row("含むワード", inc, "f-inc")),
+    el("p", { class: "hint" }, "いずれかのワードを含む投稿だけを表示します。"),
+    group("除外", row("除外ワード", exc, "f-exc")),
+    el("p", { class: "hint" }, "いずれかのワードを含む投稿を非表示にします。ワードはスペースかカンマで区切り、大文字と小文字は区別しません。本文のほか投稿者名・@アカウント名にも一致します。"),
+    filterWords() > 0 && el("button", { type: "button", class: "btn block destructive",
+      onclick: () => { setFilter({ include: "", exclude: "" }); $("sheet").close(); state.shown = PAGE; render(); } }, "フィルターを解除"),
+  ];
+  openSheet({ title: "フィルター", confirm: "適用", body, onConfirm: async () => {
+    setFilter({ include: inc.value.trim(), exclude: exc.value.trim() });
+    state.shown = PAGE;
+    render();
+  } });
+}
+
+function toolButtons() {
+  const n = filterWords();
+  return el("div", { class: "tools" },
+    el("button", { type: "button", class: "btn", "aria-pressed": String(n > 0), onclick: filterSheet },
+      n ? `フィルター ${n}` : "フィルター"),
+    canTranslate && el("button", { type: "button", class: "btn", "aria-pressed": String(state.autoTranslate),
+      title: "外国語の投稿を自動で翻訳して表示します",
+      onclick: () => { state.autoTranslate = !state.autoTranslate; store.set("autoTranslate", state.autoTranslate); render(); } },
+      "自動翻訳"));
+}
+
+function filterNote(total, shown) {
+  if (!filterWords()) return null;
+  return el("p", { class: "note" }, `フィルター適用中：${num(total)} 件中 ${num(shown)} 件を表示`);
 }
 
 // ---------------------------------------------------------------- 集計
@@ -246,16 +380,17 @@ function seg(options, value, onPick, label) {
 }
 
 function postItem(p, rank) {
+  const body = el("p", { class: "p-text" }, p.text);
   return el("li", null,
     el("div", { class: "rank-no", "aria-label": `${rank}位` }, String(rank)),
     el("div", null,
       el("div", { class: "p-head" }, el("b", null, p.name), el("span", null, `@${p.handle} ・ ${postTime(p.ts)}`),
         p.isNew && el("span", { class: "badge" }, "NEW")),
-      el("p", { class: "p-text" }, p.text),
+      body,
       el("div", { class: "p-foot" },
         el("span", { class: "likes" }, `♥ ${num(p.likes)}`), el("span", null, `リポスト ${num(p.reposts)}`),
         el("span", null, `返信 ${num(p.replies)}`), p.views > 0 && el("span", null, `表示 ${num(p.views)}`),
-        link(p.url, null, "X で開く"))));
+        translateControl(p, body), link(p.url, { class: "open" }, "X で開く"))));
 }
 
 function rankList(posts, emptyText) {
@@ -292,7 +427,8 @@ function renderTag() {
   const data = state.data, t = data.topic;
   const hours = [...t.windows.map((w) => w.hours), 0];
   if (!hours.includes(state.win)) state.win = hours.includes(24) ? 24 : hours[0];
-  const rep = buildReport(windowPosts(data, state.win), data.titles, data.runs.length ? data.runs[0].started_at : 0);
+  const inWindow = windowPosts(data, state.win), visible = applyFilter(inWindow);
+  const rep = buildReport(visible, data.titles, data.runs.length ? data.runs[0].started_at : 0);
   const failed = !!(data.runs[0] && data.runs[0].error);
   const period = state.win ? `直近${winLabel(state.win)}` : "保存中のすべての投稿";
   const set = (key) => (v) => { state[key] = v; state.shown = PAGE; saveHash(); render(); };
@@ -315,7 +451,9 @@ function renderTag() {
       t.accounts.length > 0 && el("li", null, "アカウント ", el("b", null, t.accounts.map((a) => "@" + a).join(" ")))),
     el("div", { class: "toolbar" },
       seg(hours.map((h) => [h, winLabel(h)]), state.win, set("win"), "期間"),
-      seg([["rank", "ランキング"], ["articles", "記事まとめ"], ["insights", "インサイト"]], state.view, set("view"), "表示")),
+      seg([["rank", "ランキング"], ["articles", "記事まとめ"], ["insights", "インサイト"]], state.view, set("view"), "表示"),
+      toolButtons()),
+    filterNote(inWindow.length, visible.length),
     el("div", { class: "stats" },
       [["投稿", rep.stats.posts], ["新着", rep.stats.fresh], ["記事", rep.stats.articles], ["投稿者", rep.stats.authors],
        ["いいね合計", rep.stats.likes]].map(([label, v]) => el("div", { class: "stat" }, el("b", null, num(v)), el("span", null, label)))),
@@ -330,7 +468,7 @@ function renderTag() {
 
 function renderLive() {
   const L = state.live;
-  const rep = buildReport(L.posts || [], {}, 0);
+  const rep = buildReport(applyFilter(L.posts || []), {}, 0);
   const pick = (h) => { L.hours = h; L.minFaves = (WINDOWS.find((w) => w.hours === h) || {}).def || 0; state.shown = PAGE; runLive(); };
   const faves = el("input", { type: "number", min: "0", step: "10", value: String(L.minFaves), id: "live-faves",
     onchange: (e) => { L.minFaves = Math.max(0, Number(e.target.value) || 0); runLive(); } });
@@ -349,7 +487,8 @@ function renderLive() {
       el("label", { class: "field-inline", for: "live-faves" }, "最低いいね数", faves),
       !L.pendingId && el("label", { class: "field-inline", for: "live-lang" }, "言語",
         el("select", { id: "live-lang", onchange: (e) => { L.lang = e.target.value; runLive(); } },
-          LANGS.map(([v, l]) => el("option", { value: v, selected: L.lang === v }, l))))),
+          LANGS.map(([v, l]) => el("option", { value: v, selected: L.lang === v }, l)))), toolButtons()),
+    L.q && !L.loading && filterNote((L.posts || []).length, rep.posts.length),
     !L.q ? el("p", { class: "placeholder" }, "収集が完了すると、ここに結果が表示されます。")
       : L.loading ? el("p", { class: "placeholder" }, "検索中…")
       : L.error ? el("p", { class: "placeholder" }, el("b", null, "検索できませんでした"), L.error)
@@ -535,7 +674,7 @@ $("search").addEventListener("submit", (e) => {
   e.preventDefault();
   const q = $("q").value.trim();
   if (!q) return;
-  state.live = { q, lang: navigator.language.startsWith("ja") ? "ja" : "", hours: 24, minFaves: 100, posts: [] };
+  state.live = { q, lang: "", hours: 24, minFaves: 100, posts: [] };
   state.shown = PAGE;
   $("q").blur();
   runLive();
@@ -554,6 +693,7 @@ async function refreshIndex() {
 }
 
 async function init() {
+  state.autoTranslate = canTranslate && store.get("autoTranslate", false);
   try {
     await refreshIndex();
   } catch {
