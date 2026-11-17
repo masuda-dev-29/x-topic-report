@@ -418,6 +418,35 @@ document.addEventListener("keydown", (e) => { if (e.key === "Escape" && menuAnch
 addEventListener("resize", closeMenu);
 addEventListener("scroll", closeMenu, { passive: true });
 
+// ---- ハンバーガーメニュー：右端からスライドインするドロワー
+function closeDrawer() {
+  const d = $("drawer");
+  if (!d.open) return Promise.resolve();
+  d.classList.remove("open");
+  $("btn-menu").setAttribute("aria-expanded", "false");
+  const wait = matchMedia("(prefers-reduced-motion: reduce)").matches ? 0 : 300;
+  return new Promise((done) => setTimeout(() => { d.close(); done(); }, wait));
+}
+function openDrawer() {
+  const d = $("drawer");
+  if (d.open) return;
+  closeMenu();
+  const items = mainMenu().filter(Boolean).map((it) =>
+    it === "-" ? el("hr")
+    : it.href ? link(it.href, { class: "menu-item", onclick: closeDrawer }, it.label)
+    : el("button", { type: "button", class: "menu-item", onclick: () => closeDrawer().then(it.action) }, it.label));
+  d.replaceChildren(el("div", { class: "drawer-body" },
+    el("div", { class: "drawer-head" },
+      el("h2", null, "メニュー"),
+      el("button", { type: "button", class: "icon-btn", "aria-label": "メニューを閉じる", onclick: closeDrawer }, "✕")),
+    ...items));
+  d.showModal();
+  $("btn-menu").setAttribute("aria-expanded", "true");
+  requestAnimationFrame(() => requestAnimationFrame(() => d.classList.add("open")));
+}
+$("drawer").addEventListener("cancel", (e) => { e.preventDefault(); closeDrawer(); });
+$("drawer").addEventListener("click", (e) => { if (e.target === e.currentTarget) closeDrawer(); });
+
 function mainMenu() {
   return [
     { label: "タグを追加", action: () => tagSheet() },
@@ -900,7 +929,7 @@ $("search").addEventListener("submit", (e) => {
   state.live = { q, lang: "", hours: 24, minFaves: 100, posts: [] };
   runLive();
 });
-$("btn-menu").addEventListener("click", (e) => toggleMenu(e.currentTarget, mainMenu()));
+$("btn-menu").addEventListener("click", openDrawer);
 
 async function refreshIndex() {
   const idx = await getJSON("data/index.json");

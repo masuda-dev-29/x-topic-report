@@ -9,7 +9,7 @@
 <meta name="color-scheme" content="light dark">
 <title>X Article Summarizer</title>
 <link rel="icon" type="image/svg+xml" href="logo.svg">
-<link rel="stylesheet" href="style.css?v=5">
+<link rel="stylesheet" href="style.css?v=6">
 </head>
 <body>
 <header class="bar">
@@ -20,7 +20,7 @@
     <input type="search" id="q" placeholder="キーワード、または @アカウント を検索" aria-label="タグとアカウントを検索"
            autocomplete="off" autocapitalize="off" enterkeyhint="search">
   </form>
-  <button type="button" class="icon-btn" id="btn-menu" aria-label="メニュー" aria-haspopup="menu" aria-expanded="false">
+  <button type="button" class="icon-btn" id="btn-menu" aria-label="メニュー" aria-haspopup="dialog" aria-expanded="false">
     <svg width="22" height="22" viewBox="0 0 22 22" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" aria-hidden="true">
       <path d="M3 6h16M3 11h16M3 16h16"/>
     </svg>
@@ -31,8 +31,9 @@
   <main id="main"><p class="placeholder">読み込み中…</p></main>
 </div>
 <div class="menu" id="menu" role="menu" hidden></div>
+<dialog class="drawer" id="drawer" aria-label="メニュー"></dialog>
 <dialog class="sheet" id="sheet"></dialog>
 <div class="toast" id="toast" role="status" aria-live="polite"></div>
-<script src="app.js?v=5"></script>
+<script src="app.js?v=6"></script>
 </body>
 </html>
