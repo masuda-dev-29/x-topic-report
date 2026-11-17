@@ -5,23 +5,26 @@
   },
   "topics": [
     {
-      "id": "genai",
-      "name": "生成AI",
-      "query": "生成AI",
+      "id": "llm",
+      "name": "LLM",
+      "query": "LLM",
       "lang": "ja",
       "windows": [
         { "hours": 1, "min_faves": 10 },
         { "hours": 24, "min_faves": 100 },
-        { "hours": 168, "min_faves": 500 }
+        { "hours": 168, "min_faves": 100 }
       ],
+      "include_replies": false,
       "interval_min": 60,
+      "max_pages": 2,
       "enabled": true
     },
     {
-      "id": "ai-labs",
-      "name": "AI企業の公式発表",
+      "id": "anthropic",
+      "name": "Anthropic",
       "query": "",
       "accounts": ["OpenAI", "AnthropicAI", "GoogleDeepMind"],
+      "keywords": [],
       "interval_min": 180,
       "enabled": true
     }
