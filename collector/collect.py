@@ -12,6 +12,7 @@ import argparse
 import html
 import ipaddress
 import json
+import os
 import re
 import socket
 import sys
@@ -31,6 +32,7 @@ FX_MIN_GAP = 1.5           # FxTwitter へのリクエスト間隔（秒）
 MIN_INTERVAL_MIN = 15      # トピックごとの最短収集間隔（分）
 MAX_PAGES = 5              # 1 回の収集で検索をたどる最大ページ数（1 ページ約 20 件）
 MAX_POSTS_PER_TOPIC = 1500
+WINDOW_HOURS = (1, 24, 168)  # 調査項目として選べる期間（直近 1 時間 / 24 時間 / 1 週間）
 TITLE_FETCH_PER_RUN = 12   # 1 回の収集でタイトルを取りに行くリンク数の上限
 DEFAULT_SETTINGS = {"retention_days": 30, "text_limit": 280}
 
@@ -222,17 +224,27 @@ def clean_topic(d):
     if lang and not re.fullmatch(r"[a-z]{2,3}", lang):
         raise ConfigError(f"[{tid}] lang は ja / en などの形式で指定してください")
 
-    def num(key, default, lo, hi):
+    def num(key, default, lo, hi, src=d):
         try:
-            return max(lo, min(hi, int(d.get(key, default))))
-        except (TypeError, ValueError):
+            return max(lo, min(hi, int(src.get(key, default) or 0)))
+        except (TypeError, ValueError, AttributeError):
             raise ConfigError(f"[{tid}] {key} は数値で指定してください")
+
+    # 調査項目: 期間ごとの人気投稿ランキング。旧形式 (min_likes のみ) は 24 時間と 1 週間に読み替える
+    raw = d.get("windows")
+    if not isinstance(raw, list) or not raw:
+        raw = [{"hours": h, "min_faves": d.get("min_likes", 0)} for h in (24, 168)]
+    windows = {}
+    for w in raw:
+        hours = num("hours", 0, 0, 10**6, w)
+        if hours not in WINDOW_HOURS:
+            raise ConfigError(f"[{tid}] windows.hours は {WINDOW_HOURS} のいずれかで指定してください")
+        windows[hours] = {"hours": hours, "min_faves": num("min_faves", 0, 0, 1_000_000, w)}
 
     return {
         "id": tid, "name": str(d.get("name") or tid)[:80], "query": query[:400],
         "accounts": accounts[:20], "keywords": as_list(d.get("keywords"))[:30], "lang": lang,
-        "min_likes": num("min_likes", 0, 0, 1_000_000),
-        "feed": "latest" if d.get("feed") == "latest" else "top",
+        "windows": [windows[h] for h in sorted(windows)],
         "include_replies": bool(d.get("include_replies")),
         "interval_min": num("interval_min", 60, MIN_INTERVAL_MIN, 10080),
         "max_pages": num("max_pages", 2, 1, MAX_PAGES),
@@ -253,16 +265,19 @@ def load_config():
     return settings, topics
 
 
-def build_query(t):
+def build_query(t, window=None):
+    """トピックの検索クエリ。window を渡すとその期間・最低いいね数の人気投稿に絞る。"""
     q = t["query"]
     if not q:
         return ""
     if t["lang"] and "lang:" not in q:
         q += f" lang:{t['lang']}"
-    if t["min_likes"] and "min_faves:" not in q:
-        q += f" min_faves:{t['min_likes']}"
     if not t["include_replies"] and "filter:replies" not in q:
         q += " -filter:replies"
+    if window:
+        if window["min_faves"]:
+            q += f" min_faves:{window['min_faves']}"
+        q += f" within_time:{window['hours']}h"
     return q
 
 
@@ -283,11 +298,14 @@ def collect(topic, state, settings):
     found = new = 0
     errors = []
 
-    def save(results, source, keywords=()):
+    def save(results, source, keywords=(), window=None):
         nonlocal found, new
         for p in filter(None, (normalize_post(r, settings["text_limit"]) for r in results or [])):
             full = p.pop("full_text").lower()
             if keywords and not any(k.lower() in full for k in keywords):
+                continue
+            # 検索側が条件外の投稿を混ぜて返すことがあるので、期間といいね数はここでも確認する
+            if window and (p["likes"] < window["min_faves"] or p["ts"] < started - window["hours"] * 3600):
                 continue
             found += 1
             old = by_id.get(p["id"])
@@ -298,18 +316,17 @@ def collect(topic, state, settings):
                 new += 1
             by_id[p["id"]] = p
 
-    q = build_query(topic)
-    if q:
+    for w in topic["windows"] if topic["query"] else []:
         cursor = None
         try:
-            for _ in range(topic["max_pages"]):
-                d = fx_get("/search", {"q": q, "feed": topic["feed"], "cursor": cursor})
-                save(d.get("results"), "search")
+            for _ in range(1 if w["hours"] == 1 else topic["max_pages"]):
+                d = fx_get("/search", {"q": build_query(topic, w), "feed": "top", "cursor": cursor})
+                save(d.get("results"), "search", window=w)
                 cursor = (d.get("cursor") or {}).get("bottom")
                 if not d.get("results") or not cursor:
                     break
         except FxError as e:
-            errors.append(f"検索: {e}")
+            errors.append(f"検索 {w['hours']}h: {e}")
     for handle in topic["accounts"]:
         try:
             save(fx_get(f"/profile/{handle}/statuses").get("results"), f"@{handle}", topic["keywords"])
@@ -366,7 +383,13 @@ def main():
     for f in DATA.glob("*.json"):
         if f.name not in keep:
             f.unlink()  # topics.json から消されたトピックのデータ
-    write_json(DATA / "index.json", {"generated_at": int(time.time()), "settings": settings, "topics": index})
+    # フロントがタグを書き戻す先のリポジトリ。Actions 上では環境変数から、ローカルでは前回値を引き継ぐ
+    try:
+        prev_repo = json.loads((DATA / "index.json").read_text(encoding="utf-8")).get("repo", "")
+    except (OSError, ValueError):
+        prev_repo = ""
+    write_json(DATA / "index.json", {"generated_at": int(time.time()), "settings": settings, "topics": index,
+                                     "repo": os.environ.get("GITHUB_REPOSITORY") or prev_repo})
 
 
 if __name__ == "__main__":
