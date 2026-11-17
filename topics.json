@@ -60,6 +60,26 @@
       "include_replies": false,
       "accounts": [],
       "enabled": true
+    },
+    {
+      "id": "tmwk3qshw",
+      "name": "Claude Code",
+      "query": "Claude Code",
+      "lang": "",
+      "windows": [
+        {
+          "hours": 24,
+          "min_faves": 100
+        },
+        {
+          "hours": 168,
+          "min_faves": 300
+        }
+      ],
+      "interval_min": 60,
+      "include_replies": false,
+      "accounts": [],
+      "enabled": true
     }
   ]
 }
