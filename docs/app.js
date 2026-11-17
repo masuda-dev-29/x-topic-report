@@ -1,5 +1,5 @@
 "use strict";
-// トピックレポート: docs/data/*.json（GitHub Actions が周期収集）を表示し、
+// X Article Summarizer: docs/data/*.json（GitHub Actions が周期収集）を表示し、
 // タグの追加・編集は GitHub API で topics.json に書き戻して定期調査へ反映する。
 
 const $ = (id) => document.getElementById(id);
@@ -14,7 +14,7 @@ const LANGS = [["", "指定なし"], ["ja", "日本語"], ["en", "英語"]];
 const INTERVALS = [[60, "1時間ごと"], [180, "3時間ごと"], [360, "6時間ごと"], [720, "12時間ごと"], [1440, "24時間ごと"]];
 
 const state = { index: null, data: null, tagId: null, win: 24, view: "rank", shown: PAGE, live: null,
-                deleted: new Set(), indexAt: 0, autoTranslate: false };
+                deleted: new Set(), indexAt: 0, autoTranslate: false, accWin: 0, sort: "new" };
 
 // ---------------------------------------------------------------- 小道具
 
@@ -126,6 +126,7 @@ function normalizePost(r) {
     ts: r.created_timestamp || 0, lang: r.lang || "", likes: r.likes || 0, reposts: r.reposts || r.retweets || 0,
     replies: r.replies || 0, quotes: r.quotes || 0, views: r.views || 0,
     article_title: (r.article && r.article.title) || "", links,
+    repost_by: (r.reposted_by && r.reposted_by.screen_name) || "",
     hashtags: [...new Set((text.match(/[#＃][\p{L}\p{N}_]+/gu) || []).map((t) => t.slice(1)))],
     source: "search", first_seen: 0,
   };
@@ -150,6 +151,34 @@ async function runLive() {
   } catch (e) {
     if (state.live !== L || L.seq !== seq) return;
     L.posts = []; L.error = e.message || "検索に失敗しました";
+  }
+  L.loading = false;
+  render();
+}
+
+// アカウントのプロフィールと最近の投稿をその場で取得する（フォロー前の確認・初回収集待ちの表示用）
+async function fetchProfile(handle) {
+  const r = await fetch(`https://api.fxtwitter.com/2/profile/${encodeURIComponent(handle)}`);
+  if (r.status === 404) throw new Error(`@${handle} というアカウントは見つかりませんでした。`);
+  if (!r.ok) throw new Error(`アカウントを取得できませんでした (HTTP ${r.status})`);
+  const u = (await r.json()).user || {};
+  return { handle: u.screen_name || handle, name: u.name || "", description: u.description || "",
+           followers: u.followers || 0, avatar_url: u.avatar_url || "" };
+}
+
+async function runLiveAccount() {
+  const L = state.live;
+  L.loading = true; L.error = "";
+  render();
+  try {
+    const [profile, st] = await Promise.all([fetchProfile(L.account),
+      fetch(`https://api.fxtwitter.com/2/profile/${encodeURIComponent(L.account)}/statuses`)]);
+    const posts = st.ok ? ((await st.json()).results || []).map(normalizePost).filter(Boolean) : [];
+    if (state.live !== L) return;
+    L.profile = profile; L.posts = posts;
+  } catch (e) {
+    if (state.live !== L) return;
+    L.posts = []; L.error = e.message || "アカウントを取得できませんでした";
   }
   L.loading = false;
   render();
@@ -327,7 +356,7 @@ function windowPosts(data, hours) {
 }
 
 function markdown(title, period, rep) {
-  const out = [`# ${title} — トピックレポート`, "", `- 期間: ${period}`,
+  const out = [`# ${title} — X Article Summarizer`, "", `- 期間: ${period}`,
     `- 投稿 ${rep.stats.posts} 件 / 記事 ${rep.stats.articles} 件 / 投稿者 ${rep.stats.authors} 人`, "",
     "## 人気の投稿ランキング", ""];
   rep.posts.forEach((p, i) => out.push(
@@ -359,18 +388,86 @@ function allTags() {
   return [...collected, ...pending().filter((p) => !ids.has(p.id)).map((p) => ({ ...p, pending: true }))];
 }
 
+// ---- メニュー（ハンバーガーメニューと、タグ・アカウントごとの操作メニュー）
+let menuAnchor = null;
+function closeMenu() {
+  $("menu").hidden = true;
+  if (menuAnchor) menuAnchor.setAttribute("aria-expanded", "false");
+  menuAnchor = null;
+}
+function toggleMenu(anchor, items) {
+  const menu = $("menu");
+  if (menuAnchor === anchor) return closeMenu();
+  closeMenu();
+  menu.replaceChildren(...items.filter(Boolean).map((it) =>
+    it === "-" ? el("hr")
+    : it.href ? link(it.href, { class: "menu-item", role: "menuitem", onclick: closeMenu }, it.label)
+    : el("button", { type: "button", role: "menuitem", class: "menu-item" + (it.destructive ? " destructive" : ""),
+        onclick: () => { closeMenu(); it.action(); } }, it.label)));
+  menu.hidden = false;
+  const r = anchor.getBoundingClientRect();
+  menu.style.top = `${Math.min(r.bottom + 6, innerHeight - menu.offsetHeight - 8)}px`;
+  menu.style.left = `${Math.max(8, Math.min(r.right - menu.offsetWidth, innerWidth - menu.offsetWidth - 8))}px`;
+  menuAnchor = anchor;
+  anchor.setAttribute("aria-expanded", "true");
+}
+document.addEventListener("click", (e) => {
+  if (menuAnchor && !$("menu").contains(e.target) && !menuAnchor.contains(e.target)) closeMenu();
+});
+document.addEventListener("keydown", (e) => { if (e.key === "Escape" && menuAnchor) { menuAnchor.focus(); closeMenu(); } });
+addEventListener("resize", closeMenu);
+addEventListener("scroll", closeMenu, { passive: true });
+
+function mainMenu() {
+  return [
+    { label: "タグを追加", action: () => tagSheet() },
+    { label: "アカウントをフォロー", action: () => followSheet() },
+    "-",
+    canTranslate && { label: state.autoTranslate ? "自動翻訳をオフにする" : "自動翻訳をオンにする",
+      action: () => { state.autoTranslate = !state.autoTranslate; store.set("autoTranslate", state.autoTranslate); render(); } },
+    { label: "設定（GitHub 連携）", action: () => settingsSheet() },
+    repo() && "-",
+    repo() && { label: "今すぐ収集を実行", href: `https://github.com/${repo()}/actions/workflows/collect.yml` },
+    repo() && { label: "GitHub でリポジトリを開く", href: `https://github.com/${repo()}` },
+  ];
+}
+function rowMenu(t) {
+  return t.kind === "account" ? [
+    { label: "X でプロフィールを開く", href: `https://x.com/${t.accounts[0]}` },
+    { label: "フォロー解除", destructive: true, action: () => deleteTag(t) },
+  ] : [
+    { label: "編集", action: () => tagSheet(t) },
+    { label: "削除", destructive: true, action: () => deleteTag(t) },
+  ];
+}
+
+// アカウントのアイコン。画像は X の配信元 (pbs.twimg.com) のものだけ表示する
+function avatar(url, name, size) {
+  const cls = "avatar" + (size ? " " + size : "");
+  return /^https:\/\/pbs\.twimg\.com\//.test(url || "")
+    ? el("img", { class: cls, src: size ? url.replace("_normal.", "_200x200.") : url, alt: "", loading: "lazy" })
+    : el("span", { class: cls, "aria-hidden": "true" }, (name || "?").replace(/^@/, "").slice(0, 1).toUpperCase());
+}
+
 function renderSidebar() {
   const current = state.live ? state.live.pendingId : state.tagId;
+  const all = allTags();
+  const item = (t) => el("li", { class: "tag-item" },
+    el("button", { type: "button", class: "tag-row", "aria-current": String(t.id === current), onclick: () => selectTag(t.id) },
+      t.kind === "account" ? avatar(t.avatar_url, t.name) : el("span", { class: "hash" }, "#"),
+      el("span", { class: "name" }, t.name),
+      el("span", { class: "count" }, t.pending ? "収集待ち" : num(t.post_count))),
+    !t.pending && el("button", { type: "button", class: "row-more", "aria-label": `${t.name} の操作`, "aria-haspopup": "menu",
+      "aria-expanded": "false", onclick: (e) => toggleMenu(e.currentTarget, rowMenu(t)) }, "⋯"));
+  const addRow = (label, action) => el("li", null,
+    el("button", { type: "button", class: "tag-row add-row", onclick: action }, el("span", { class: "name" }, label)));
+  closeMenu();
   $("sidebar").replaceChildren(
     el("p", { class: "side-title" }, "タグ"),
-    el("ul", { class: "tag-list" },
-      allTags().map((t) => el("li", null,
-        el("button", { type: "button", class: "tag-row", "aria-current": String(t.id === current),
-                       onclick: () => selectTag(t.id) },
-          el("span", { class: "hash" }, "#"), el("span", { class: "name" }, t.name),
-          el("span", { class: "count" }, t.pending ? "収集待ち" : num(t.post_count))))),
-      el("li", null, el("button", { type: "button", class: "tag-row add-row", onclick: () => tagSheet() },
-        el("span", { class: "name" }, "＋ タグを追加")))));
+    el("ul", { class: "tag-list" }, all.filter((t) => t.kind !== "account").map(item), addRow("＋ タグを追加", () => tagSheet())),
+    el("p", { class: "side-title" }, "フォロー中"),
+    el("ul", { class: "tag-list" }, all.filter((t) => t.kind === "account").map(item),
+      addRow("＋ アカウントをフォロー", () => followSheet())));
 }
 
 function seg(options, value, onPick, label) {
@@ -384,6 +481,7 @@ function postItem(p, rank) {
   return el("li", null,
     el("div", { class: "rank-no", "aria-label": `${rank}位` }, String(rank)),
     el("div", null,
+      p.repost_by && p.repost_by !== p.handle && el("div", { class: "repost" }, `@${p.repost_by} がリポスト`),
       el("div", { class: "p-head" }, el("b", null, p.name), el("span", null, `@${p.handle} ・ ${postTime(p.ts)}`),
         p.isNew && el("span", { class: "badge" }, "NEW")),
       body,
@@ -393,10 +491,10 @@ function postItem(p, rank) {
         translateControl(p, body), link(p.url, { class: "open" }, "X で開く"))));
 }
 
-function rankList(posts, emptyText) {
+function rankList(posts, emptyText, numbered = true) {
   if (!posts.length) return el("p", { class: "placeholder" }, emptyText);
   return [
-    el("div", { class: "card" }, el("ol", { class: "list rank" }, posts.slice(0, state.shown).map((p, i) => postItem(p, i + 1)))),
+    el("div", { class: "card" }, el("ol", { class: "list rank" + (numbered ? "" : " plain") }, posts.slice(0, state.shown).map((p, i) => postItem(p, i + 1)))),
     posts.length > state.shown && el("button", { type: "button", class: "btn more",
       onclick: () => { state.shown += PAGE; render(); } }, `さらに表示（残り ${posts.length - state.shown} 件）`),
   ];
@@ -424,40 +522,55 @@ const footer = () => el("footer", null,
   " の公開 API から取得しています。本文は抜粋のみを保持し、各投稿は X 上の元投稿へリンクしています。投稿の著作権は各投稿者に帰属します。");
 
 function renderTag() {
-  const data = state.data, t = data.topic;
-  const hours = [...t.windows.map((w) => w.hours), 0];
-  if (!hours.includes(state.win)) state.win = hours.includes(24) ? 24 : hours[0];
-  const inWindow = windowPosts(data, state.win), visible = applyFilter(inWindow);
+  const data = state.data, t = data.topic, isAcc = t.kind === "account";
+  const winKey = isAcc ? "accWin" : "win";
+  const hours = isAcc ? [24, 168, 0] : [...t.windows.map((w) => w.hours), 0];
+  if (!hours.includes(state[winKey])) state[winKey] = hours.includes(24) ? 24 : hours[0];
+  const win = state[winKey];
+  const inWindow = windowPosts(data, win), visible = applyFilter(inWindow);
   const rep = buildReport(visible, data.titles, data.runs.length ? data.runs[0].started_at : 0);
+  const byNew = isAcc && state.sort === "new";
+  const posts = byNew ? [...rep.posts].sort((a, b) => b.ts - a.ts) : rep.posts;
   const failed = !!(data.runs[0] && data.runs[0].error);
-  const period = state.win ? `直近${winLabel(state.win)}` : "保存中のすべての投稿";
+  const period = win ? `直近${winLabel(win)}` : "保存中のすべての投稿";
   const set = (key) => (v) => { state[key] = v; state.shown = PAGE; saveHash(); render(); };
+  const prof = data.profile || {};
+  const handle = isAcc ? prof.handle || t.accounts[0] : "";
+  const every = t.interval_min >= 60 ? t.interval_min / 60 + "時間" : t.interval_min + "分";
 
   setMain(
     el("div", { class: "title-row" },
-      el("div", null, el("p", { class: "eyebrow" }, "定期調査中のタグ"), el("h1", null, t.name)),
+      isAcc && avatar(prof.avatar_url, t.name, "lg"),
+      el("div", null, el("p", { class: "eyebrow" }, isAcc ? "フォロー中のアカウント" : "定期調査中のタグ"), el("h1", null, t.name)),
       el("div", { class: "actions" },
-        el("button", { type: "button", class: "btn", onclick: () => tagSheet(t) }, "編集"),
+        isAcc ? link(`https://x.com/${handle}`, { class: "btn" }, "X で開く")
+              : el("button", { type: "button", class: "btn", onclick: () => tagSheet(t) }, "編集"),
         el("button", { type: "button", class: "btn",
-          onclick: () => download(`report-${t.id}.md`, markdown(t.name, period, rep)) }, "書き出し"),
-        repo() && link(`https://github.com/${repo()}/actions/workflows/collect.yml`, { class: "btn" }, "今すぐ収集"))),
+          onclick: () => download(`report-${t.id}.md`, markdown(t.name, period, { ...rep, posts })) }, "書き出し"),
+        el("button", { type: "button", class: "btn destructive", onclick: () => deleteTag(t) }, isAcc ? "フォロー解除" : "削除"))),
     el("p", { class: "sub" + (failed ? " err" : "") },
-      failed ? `最終収集 ${ago(data.last_run_at)} ・ 一部取得に失敗しました（${data.last_status}）`
-             : `最終収集 ${ago(data.last_run_at)} ・ ${t.interval_min >= 60 ? t.interval_min / 60 + "時間" : t.interval_min + "分"}ごとに調査`),
-    el("ul", { class: "conds", "aria-label": "調査条件" },
+      (isAcc ? `@${handle} ・ ${prof.followers ? `フォロワー ${num(prof.followers)} 人 ・ ` : ""}` : "") +
+      (failed ? `最終収集 ${ago(data.last_run_at)} ・ 一部取得に失敗しました（${data.last_status}）`
+              : `最終収集 ${ago(data.last_run_at)} ・ ${every}ごとに${isAcc ? "収集" : "調査"}`)),
+    isAcc && prof.description && el("p", { class: "bio" }, prof.description),
+    !isAcc && el("ul", { class: "conds", "aria-label": "調査条件" },
       t.query && el("li", null, "キーワード ", el("b", null, t.query)),
       t.lang && el("li", null, "言語 ", el("b", null, t.lang)),
       t.query && t.windows.map((w) => el("li", null, `${winLabel(w.hours)} `, el("b", null, `♥ ${num(w.min_faves)} 以上`))),
       t.accounts.length > 0 && el("li", null, "アカウント ", el("b", null, t.accounts.map((a) => "@" + a).join(" ")))),
     el("div", { class: "toolbar" },
-      seg(hours.map((h) => [h, winLabel(h)]), state.win, set("win"), "期間"),
-      seg([["rank", "ランキング"], ["articles", "記事まとめ"], ["insights", "インサイト"]], state.view, set("view"), "表示"),
+      seg(hours.map((h) => [h, winLabel(h)]), win, set(winKey), "期間"),
+      isAcc && seg([["new", "新着順"], ["top", "人気順"]], state.sort, set("sort"), "並び順"),
+      seg([["rank", isAcc ? "投稿" : "ランキング"], ["articles", "記事まとめ"], ["insights", "インサイト"]], state.view, set("view"), "表示"),
       toolButtons()),
     filterNote(inWindow.length, visible.length),
     el("div", { class: "stats" },
-      [["投稿", rep.stats.posts], ["新着", rep.stats.fresh], ["記事", rep.stats.articles], ["投稿者", rep.stats.authors],
-       ["いいね合計", rep.stats.likes]].map(([label, v]) => el("div", { class: "stat" }, el("b", null, num(v)), el("span", null, label)))),
-    state.view === "rank" ? rankList(rep.posts, `${period}に条件を満たす投稿はありません。期間を広げるか、「編集」で最低いいね数を下げてみてください。`)
+      [["投稿", rep.stats.posts], ["新着", rep.stats.fresh], ["記事", rep.stats.articles],
+       !isAcc && ["投稿者", rep.stats.authors], ["いいね合計", rep.stats.likes]].filter(Boolean)
+        .map(([label, v]) => el("div", { class: "stat" }, el("b", null, num(v)), el("span", null, label)))),
+    state.view === "rank"
+      ? rankList(posts, isAcc ? `${period}の投稿はありません。期間を広げてみてください。`
+          : `${period}に条件を満たす投稿はありません。期間を広げるか、「編集」で最低いいね数を下げてみてください。`, !byNew)
       : state.view === "articles" ? articleList(rep.articles)
       : el("div", { class: "insights" },
           kvCard("ハッシュタグ", rep.hashtags.map(([tag, n]) => ["#" + tag, `${n} 件`])),
@@ -466,8 +579,39 @@ function renderTag() {
     footer());
 }
 
+// 検索したアカウント、または初回収集待ちのアカウントの表示
+function renderLiveAccount() {
+  const L = state.live, prof = L.profile || {};
+  const handle = prof.handle || L.account;
+  const followed = allTags().find((t) => t.kind === "account" && !t.pending &&
+    (t.accounts[0] || "").toLowerCase() === handle.toLowerCase());
+  const posts = buildReport(applyFilter(L.posts || []), {}, 0).posts.sort((a, b) => b.ts - a.ts);
+  const ready = !L.loading && !L.error;
+
+  setMain(
+    el("div", { class: "title-row" },
+      avatar(prof.avatar_url, prof.name || handle, "lg"),
+      el("div", null, el("p", { class: "eyebrow" }, L.pendingId ? "収集待ちのアカウント" : "アカウント"),
+        el("h1", null, prof.name || L.name || `@${handle}`)),
+      el("div", { class: "actions" },
+        link(`https://x.com/${handle}`, { class: "btn" }, "X で開く"),
+        ready && !L.pendingId && (followed
+          ? el("button", { type: "button", class: "btn", onclick: () => selectTag(followed.id) }, "フォロー中の投稿を見る")
+          : el("button", { type: "button", class: "btn primary", onclick: () => followAccount(prof) }, "フォローして定期収集")))),
+    el("p", { class: "sub" }, `@${handle}` + (prof.followers ? ` ・ フォロワー ${num(prof.followers)} 人` : "") +
+      (L.pendingId ? " ・ 初回の収集を待っています（通常 1〜2 分）" : "")),
+    prof.description && el("p", { class: "bio" }, prof.description),
+    ready && el("div", { class: "toolbar" }, toolButtons()),
+    ready && filterNote((L.posts || []).length, posts.length),
+    L.loading ? el("p", { class: "placeholder" }, "読み込み中…")
+      : L.error ? el("p", { class: "placeholder" }, el("b", null, "表示できませんでした"), L.error)
+      : rankList(posts, "表示できる最近の投稿がありません。", false),
+    footer());
+}
+
 function renderLive() {
   const L = state.live;
+  if (L.account) return renderLiveAccount();
   const rep = buildReport(applyFilter(L.posts || []), {}, 0);
   const pick = (h) => { L.hours = h; L.minFaves = (WINDOWS.find((w) => w.hours === h) || {}).def || 0; state.shown = PAGE; runLive(); };
   const faves = el("input", { type: "number", min: "0", step: "10", value: String(L.minFaves), id: "live-faves",
@@ -478,7 +622,9 @@ function renderLive() {
       el("div", null, el("p", { class: "eyebrow" }, L.pendingId ? "収集待ちのタグ" : "検索結果"), el("h1", null, L.name || L.q)),
       !L.pendingId && el("div", { class: "actions" },
         el("button", { type: "button", class: "btn primary",
-          onclick: () => tagSheet(null, { query: L.q, lang: L.lang, hours: L.hours, minFaves: L.minFaves }) }, "タグに追加して定期調査"))),
+          onclick: () => tagSheet(null, { query: L.q, lang: L.lang, hours: L.hours, minFaves: L.minFaves }) }, "タグに追加して定期調査"),
+        /^\w{1,15}$/.test(L.q) && el("button", { type: "button", class: "btn", onclick: () => showAccount(L.q) },
+          `@${L.q} のアカウントを見る`))),
     el("p", { class: "sub" }, L.pendingId
       ? "初回の収集を待っています（通常 1〜2 分）。それまでは現在の検索結果を表示します。"
       : "いまの X の人気投稿です。タグに追加すると、この条件で定期的に調査して記録します。"),
@@ -501,8 +647,8 @@ function render() {
   renderSidebar();
   if (state.live) renderLive();
   else if (state.data) renderTag();
-  else setMain(el("p", { class: "placeholder" }, el("b", null, "タグがありません"),
-    "上の検索欄にキーワードを入力するか、「＋ タグを追加」から調査したいタグを登録してください。"));
+  else setMain(el("p", { class: "placeholder" }, el("b", null, "まだ何も登録されていません"),
+    "上の検索欄にキーワードか @アカウント名 を入力して、調査したいタグやフォローしたいアカウントを登録してください。"));
 }
 
 function saveHash() {
@@ -514,6 +660,10 @@ function saveHash() {
 async function selectTag(id) {
   const p = pending().find((x) => x.id === id);
   state.shown = PAGE;
+  if (p && p.kind === "account" && !state.index.topics.some((t) => t.id === id)) {
+    state.live = { account: p.accounts[0], name: p.name, pendingId: id, posts: [] };
+    return runLiveAccount();
+  }
   if (p && !state.index.topics.some((t) => t.id === id)) {
     const w = (p.windows || [])[0] || { hours: 24, min_faves: 0 };
     state.live = { q: p.query, name: p.name, lang: p.lang, hours: w.hours, minFaves: w.min_faves, pendingId: id, posts: [] };
@@ -653,19 +803,87 @@ function tagSheet(existing, preset) {
 }
 
 async function deleteTag(t) {
-  if (!confirm(`タグ「${t.name}」を削除しますか？\n収集済みのデータも削除され、元に戻せません。`)) return;
+  const isAcc = t.kind === "account";
+  if (!token()) {
+    toast("削除するには、最初に GitHub 連携の設定が必要です");
+    return settingsSheet(() => deleteTag(t));
+  }
+  if (!confirm(isAcc ? `${t.name}（@${t.accounts[0]}）のフォローを解除しますか？\n収集済みの投稿も削除され、元に戻せません。`
+                     : `タグ「${t.name}」を削除しますか？\n収集済みのデータも削除され、元に戻せません。`)) return;
   try {
-    await updateConfig((cfg) => { cfg.topics = cfg.topics.filter((x) => x.id !== t.id); }, `tags: remove ${t.name}`);
+    await updateConfig((cfg) => { cfg.topics = cfg.topics.filter((x) => x.id !== t.id); },
+      `${isAcc ? "accounts: unfollow" : "tags: remove"} ${t.name}`);
   } catch (e) {
     return toast(e.message);
   }
   state.deleted.add(t.id);
   store.set("pending", pending().filter((p) => p.id !== t.id));
-  $("sheet").close();
-  toast("タグを削除しました");
-  state.data = null; state.tagId = null;
-  const next = allTags()[0];
-  if (next) selectTag(next.id); else render();
+  if ($("sheet").open) $("sheet").close();
+  toast(isAcc ? "フォローを解除しました" : "タグを削除しました");
+  if (state.tagId === t.id || !state.tagId) {
+    state.data = null; state.tagId = null;
+    const next = allTags()[0];
+    if (next) return selectTag(next.id);
+  }
+  render();
+}
+
+// 検索欄などからアカウントを表示する。フォロー済みなら収集済みの画面へ
+function showAccount(handle) {
+  const known = allTags().find((t) => t.kind === "account" && (t.accounts[0] || "").toLowerCase() === handle.toLowerCase());
+  if (known) return selectTag(known.id);
+  state.live = { account: handle, posts: [] };
+  state.shown = PAGE;
+  runLiveAccount();
+}
+
+// アカウントをフォローして定期収集の対象にする（profile は fetchProfile の結果）
+async function followAccount(profile) {
+  if (!token()) {
+    toast("フォローするには、最初に GitHub 連携の設定が必要です");
+    return settingsSheet(() => followAccount(profile));
+  }
+  const id = "a-" + profile.handle.toLowerCase();
+  const entry = { id, kind: "account", name: profile.name || profile.handle, query: "", accounts: [profile.handle],
+                  interval_min: 60, enabled: true };
+  try {
+    await updateConfig((cfg) => { if (!cfg.topics.some((x) => x.id === id)) cfg.topics.push(entry); },
+      `accounts: follow @${profile.handle}`);
+  } catch (e) {
+    return toast(e.message);
+  }
+  state.deleted.delete(id);
+  if (!state.index.topics.some((t) => t.id === id)) {
+    store.set("pending", [...pending().filter((p) => p.id !== id), { ...entry, avatar_url: profile.avatar_url }]);
+  }
+  toast(`@${profile.handle} をフォローしました。初回の収集結果は 1〜2 分で反映されます`);
+  $("q").value = "";
+  selectTag(id);
+}
+
+function parseHandle(text) {
+  const m = text.trim().match(/^@?(\w{1,15})$/) ||
+    text.trim().match(/^(?:https?:\/\/)?(?:www\.|mobile\.)?(?:x|twitter)\.com\/(\w{1,15})\/?(?:\?.*)?$/i);
+  return m ? m[1] : "";
+}
+
+function followSheet() {
+  if (!token()) {
+    toast("フォローするには、最初に GitHub 連携の設定が必要です");
+    return settingsSheet(() => followSheet());
+  }
+  const input = el("input", { type: "text", id: "f-handle", placeholder: "@AnthropicAI", autocomplete: "off",
+                              autocapitalize: "off", spellcheck: "false" });
+  const body = [
+    group("アカウント", row("ユーザー名", input, "f-handle")),
+    el("p", { class: "hint" }, "X のユーザー名（@ から始まる名前）か、プロフィールの URL を入力してください。フォローすると、そのアカウントの投稿を定期的に収集します。"),
+  ];
+  openSheet({ title: "アカウントをフォロー", confirm: "フォロー", body, onConfirm: async () => {
+    const handle = parseHandle(input.value);
+    if (!handle) throw new Error("ユーザー名を正しく入力してください（半角英数字とアンダースコア、15 文字まで）。");
+    const profile = await fetchProfile(handle);
+    setTimeout(() => followAccount(profile), 0);
+  } });
 }
 
 // ---------------------------------------------------------------- 起動
@@ -674,12 +892,15 @@ $("search").addEventListener("submit", (e) => {
   e.preventDefault();
   const q = $("q").value.trim();
   if (!q) return;
-  state.live = { q, lang: "", hours: 24, minFaves: 100, posts: [] };
-  state.shown = PAGE;
   $("q").blur();
+  state.shown = PAGE;
+  // 「@名前」やプロフィール URL はアカウント、それ以外はキーワードとして検索する
+  const handle = /^@|^(https?:\/\/)?(www\.|mobile\.)?(x|twitter)\.com\//i.test(q) ? parseHandle(q) : "";
+  if (handle) return showAccount(handle);
+  state.live = { q, lang: "", hours: 24, minFaves: 100, posts: [] };
   runLive();
 });
-$("btn-settings").addEventListener("click", () => settingsSheet());
+$("btn-menu").addEventListener("click", (e) => toggleMenu(e.currentTarget, mainMenu()));
 
 async function refreshIndex() {
   const idx = await getJSON("data/index.json");

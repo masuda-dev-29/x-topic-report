@@ -127,6 +127,7 @@ def normalize_post(r, text_limit):
         "quotes": int(r.get("quotes") or 0),
         "views": int(r.get("views") or 0),
         "article_title": article.get("title") or "",
+        "repost_by": (r.get("reposted_by") or {}).get("screen_name") or "" if isinstance(r.get("reposted_by"), dict) else "",
         "links": links,
         "hashtags": list(dict.fromkeys(re.findall(r"[#＃](\w+)", text))),
     }
@@ -217,7 +218,10 @@ def clean_topic(d):
         if not re.fullmatch(r"\w{1,15}", a, re.A):
             raise ConfigError(f"[{tid}] アカウント名が不正です: {a}")
         accounts.append(a)
-    query = str(d.get("query") or "").strip()
+    kind = "account" if d.get("kind") == "account" else "tag"  # account: 特定アカウントのフォロー
+    query = "" if kind == "account" else str(d.get("query") or "").strip()
+    if kind == "account" and not accounts:
+        raise ConfigError(f"[{tid}] accounts にフォローするアカウントを指定してください")
     if not query and not accounts:
         raise ConfigError(f"[{tid}] query か accounts のどちらかを指定してください")
     lang = str(d.get("lang") or "").strip().lower()
@@ -242,7 +246,7 @@ def clean_topic(d):
         windows[hours] = {"hours": hours, "min_faves": num("min_faves", 0, 0, 1_000_000, w)}
 
     return {
-        "id": tid, "name": str(d.get("name") or tid)[:80], "query": query[:400],
+        "id": tid, "kind": kind, "name": str(d.get("name") or tid)[:80], "query": query[:400],
         "accounts": accounts[:20], "keywords": as_list(d.get("keywords"))[:30], "lang": lang,
         "windows": [windows[h] for h in sorted(windows)],
         "include_replies": bool(d.get("include_replies")),
@@ -289,7 +293,8 @@ def load_state(tid):
     except (OSError, ValueError):
         s = {}
     return {"posts": s.get("posts") or [], "titles": s.get("titles") or {}, "runs": s.get("runs") or [],
-            "last_run_at": s.get("last_run_at") or 0, "last_status": s.get("last_status") or ""}
+            "last_run_at": s.get("last_run_at") or 0, "last_status": s.get("last_status") or "",
+            "profile": s.get("profile") or {}}
 
 
 def collect(topic, state, settings):
@@ -332,6 +337,15 @@ def collect(topic, state, settings):
             save(fx_get(f"/profile/{handle}/statuses").get("results"), f"@{handle}", topic["keywords"])
         except FxError as e:
             errors.append(f"@{handle}: {e}")
+    if topic["kind"] == "account":
+        try:
+            u = fx_get(f"/profile/{topic['accounts'][0]}").get("user") or {}
+            state["profile"] = {
+                "handle": u.get("screen_name") or topic["accounts"][0], "name": u.get("name") or "",
+                "description": (u.get("description") or "")[:300], "followers": int(u.get("followers") or 0),
+                "avatar_url": u.get("avatar_url") or ""}
+        except FxError as e:
+            errors.append(f"プロフィール: {e}")
 
     cutoff = started - settings["retention_days"] * 86400
     posts = [p for p in by_id.values() if not p["ts"] or p["ts"] >= cutoff]
@@ -378,7 +392,8 @@ def main():
         public = t | {"built_query": build_query(t)}
         write_json(DATA / f"{t['id']}.json", {"topic": public, **state})
         index.append(public | {"post_count": len(state["posts"]), "last_run_at": state["last_run_at"],
-                               "last_status": state["last_status"]})
+                               "last_status": state["last_status"],
+                               "avatar_url": state["profile"].get("avatar_url", "")})
     keep = {f"{t['id']}.json" for t in topics} | {"index.json"}
     for f in DATA.glob("*.json"):
         if f.name not in keep:

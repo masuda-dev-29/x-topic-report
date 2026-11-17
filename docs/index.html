@@ -3,29 +3,36 @@
 <head>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
-<meta http-equiv="Content-Security-Policy" content="default-src 'none'; script-src 'self'; style-src 'self'; img-src 'self' data:; connect-src 'self' https://api.github.com https://api.fxtwitter.com; base-uri 'none'; form-action 'none'">
+<meta http-equiv="Content-Security-Policy" content="default-src 'none'; script-src 'self'; style-src 'self'; img-src 'self' data: https://pbs.twimg.com; connect-src 'self' https://api.github.com https://api.fxtwitter.com; base-uri 'none'; form-action 'none'">
 <meta name="referrer" content="no-referrer">
 <meta name="robots" content="noindex">
 <meta name="color-scheme" content="light dark">
-<title>トピックレポート</title>
-<link rel="icon" href="data:,">
-<link rel="stylesheet" href="style.css?v=4">
+<title>X Article Summarizer</title>
+<link rel="icon" type="image/svg+xml" href="logo.svg">
+<link rel="stylesheet" href="style.css?v=5">
 </head>
 <body>
 <header class="bar">
-  <a class="brand" href="./">トピックレポート</a>
+  <a class="brand" href="./" aria-label="X Article Summarizer">
+    <img src="logo.svg" width="28" height="28" alt=""><span>X Article Summarizer</span>
+  </a>
   <form class="search" id="search" role="search">
-    <input type="search" id="q" placeholder="キーワードを検索してタグに追加" aria-label="キーワード検索"
-           autocomplete="off" enterkeyhint="search">
+    <input type="search" id="q" placeholder="キーワード、または @アカウント を検索" aria-label="タグとアカウントを検索"
+           autocomplete="off" autocapitalize="off" enterkeyhint="search">
   </form>
-  <button type="button" class="text-btn" id="btn-settings">設定</button>
+  <button type="button" class="icon-btn" id="btn-menu" aria-label="メニュー" aria-haspopup="menu" aria-expanded="false">
+    <svg width="22" height="22" viewBox="0 0 22 22" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" aria-hidden="true">
+      <path d="M3 6h16M3 11h16M3 16h16"/>
+    </svg>
+  </button>
 </header>
 <div class="layout">
-  <nav class="sidebar" id="sidebar" aria-label="タグ"></nav>
+  <nav class="sidebar" id="sidebar" aria-label="タグとフォロー中のアカウント"></nav>
   <main id="main"><p class="placeholder">読み込み中…</p></main>
 </div>
+<div class="menu" id="menu" role="menu" hidden></div>
 <dialog class="sheet" id="sheet"></dialog>
 <div class="toast" id="toast" role="status" aria-live="polite"></div>
-<script src="app.js?v=4"></script>
+<script src="app.js?v=5"></script>
 </body>
 </html>
